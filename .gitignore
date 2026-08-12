@@ -12,6 +12,6 @@ venv/
 .mypy_cache/
 .ruff_cache/
 *.png
-#!data/
+# TGA instrument exports under data/ are tracked intentionally.
 .DS_Store
 Thumbs.db
