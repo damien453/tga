@@ -12,6 +12,6 @@ venv/
 .mypy_cache/
 .ruff_cache/
 *.png
-!data/
+#!data/
 .DS_Store
 Thumbs.db
