@@ -11,7 +11,8 @@ By the end of this lab you will be able to:
 3. Inspect column names and units
 4. Plot a single run (default multi-panel or custom axes)
 5. Overlay multiple runs on one chart
-6. Save figures to disk instead of opening a window
+6. Plot an entire folder (overlay or batch export)
+7. Save figures to disk instead of opening a window
 
 ## Prerequisites
 
@@ -34,7 +35,7 @@ Confirm the CLI is available:
 python chart.py --help
 ```
 
-You should see options for `-x` / `-y`, `-o`, `--list-files`, and `--list-columns`.
+You should see options for `-x` / `-y`, `-o`, `--batch`, `--recursive`, `--list-files`, and `--list-columns`.
 
 > Tip: On headless machines (CI, SSH without a display), always pass `-o some.png` so Matplotlib does not try to open a GUI window. You can also set `MPLBACKEND=Agg`.
 
@@ -123,7 +124,7 @@ python chart.py WJM260723.txt -x Ts
 
 ## Part 4 — Multi-file overlays
 
-Pass two or more files to overlay traces on one chart. Overlay mode defaults to **Weight vs Ts** unless you override with `-x` / `-y`. At most **10** traces are allowed.
+Pass two or more files to overlay traces on one chart. Overlay mode defaults to **Weight vs Ts** unless you override with `-x` / `-y`. Large overlays are supported (legends move outside the plot; traces are lightly downsampled for speed).
 
 ```bash
 python chart.py WJM260723.txt VRD-637-1A.txt -o lab_overlay.png
@@ -135,14 +136,45 @@ Compare heat-flow instead of weight:
 python chart.py WJM260723.txt VRD-637-1A.txt -x Ts -y HF -o lab_overlay_hf.png
 ```
 
-Each trace is labeled with its path relative to `data/`.
+Each trace is labeled with its file name (or relative path if names collide).
 
 ### Checkpoint
 
 - [ ] `lab_overlay.png` has a legend with both file names
-- [ ] Passing more than 10 files is rejected
 
-## Part 5 — Ambiguous names and subfolders
+## Part 5 — Plot a whole folder
+
+Pass a directory to select every `.txt` inside it. Folder names under `data/` can use spaces or hyphens interchangeably (`GrEC-Standard` matches `GrEC Standard`).
+
+**Overlay all runs in the folder** (one chart):
+
+```bash
+python chart.py "GrEC Standard" -o grec_overlay.png
+python chart.py GrEC-Standard -o grec_overlay.png
+python chart.py "EC Hold checks" -o ec_hold_overlay.png
+```
+
+On Windows you can also pass an absolute path:
+
+```bash
+python chart.py "C:\dev\tga\data\GrEC-Standard" -o grec_overlay.png
+```
+
+**Batch mode** — one multi-panel figure per file, written into an output directory:
+
+```bash
+python chart.py "GrEC Standard" --batch -o grec_charts/
+python chart.py "EC Hold checks" --batch -o ec_hold_charts/
+```
+
+Add `-r` / `--recursive` to include `.txt` files in subfolders of the given directory.
+
+### Checkpoint
+
+- [ ] Folder overlay writes a single PNG with one legend entry per run
+- [ ] `--batch -o some_dir/` creates one PNG per input file
+
+## Part 6 — Ambiguous names and subfolders
 
 Some basenames appear in more than one place (root `data/` and `data/EC Hold checks/`). A bare name then fails with the matching paths:
 
@@ -168,7 +200,7 @@ python chart.py "Barrel EC_O2.txt" -o lab_barrel.png
 - [ ] The ambiguous basename prints both candidate paths
 - [ ] Specifying `EC Hold checks/...` successfully saves a figure
 
-## Part 6 — Data format (optional reading)
+## Part 7 — Data format (optional reading)
 
 Exports are whitespace-delimited text:
 
@@ -189,9 +221,11 @@ Files are read as Latin-1 so degree symbols from the instrument software parse c
 | Custom axes | `python chart.py FILE -x Ts -y Weight -o out.png` |
 | Overlay runs | `python chart.py FILE1 FILE2 -o out.png` |
 | Overlay custom | `python chart.py FILE1 FILE2 -x t -y HF -o out.png` |
+| Folder overlay | `python chart.py "GrEC Standard" -o out.png` |
+| Folder batch | `python chart.py "GrEC Standard" --batch -o charts/` |
 
 Generated `*.png` files are gitignored; keep them local or attach them outside the repo.
 
 ## Wrap-up
 
-You should now be able to discover tracked sample data, inspect columns, plot single and overlaid TGA/DSC runs, and export PNGs for reports. For further experiments, try overlaying a hold-temperature series from `EC Hold checks/` or comparing sonicated vs non-sonicated WJM runs.
+You should now be able to discover tracked sample data, inspect columns, plot single and overlaid TGA/DSC runs, chart whole folders, and export PNGs for reports. For further experiments, try overlaying a hold-temperature series from `EC Hold checks/` or batch-exporting `VXGr Annealing Study/`.
