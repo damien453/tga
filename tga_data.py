@@ -37,33 +37,55 @@ def _split_fields(line: str) -> list[str]:
     return line.split()
 
 
+def _default_unit(name: str) -> str:
+    key = name.casefold()
+    if key in {"ts", "tr"}:
+        return "deg C"
+    if key == "t":
+        return "s"
+    if key == "hf":
+        return "mW"
+    if key == "weight":
+        return "mg"
+    if key == "index":
+        return "#"
+    return ""
+
+
 def load_tga_file(path: str | Path) -> TgaDataset:
     """
     Parse a TGA text export.
 
     Expected layout:
       line 1: column names (e.g. Index Ts t HF Weight Tr)
-      line 2: units        (e.g. [#] [°C] [s] [mW] [mg] [°C])
+      line 2: units        (e.g. [#] [deg C] [s] [mW] [mg] [deg C])
       line 3+: whitespace-separated scientific values
+
+    The units row is optional. If line 2 is numeric data, default units are used.
     """
     file_path = Path(path)
     # Instrument exports often use Latin-1 degree symbols (0xB0), not UTF-8.
     text = file_path.read_text(encoding="latin-1")
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if len(lines) < 3:
-        raise ValueError(f"{file_path} needs a header, units row, and data.")
+    if len(lines) < 2:
+        raise ValueError(f"{file_path} needs a header and data.")
 
     names = _split_fields(lines[0])
     raw_units = _split_fields(lines[1])
-    units = [unit.strip("[]") for unit in raw_units]
-
-    if len(names) != len(units):
-        raise ValueError(
-            f"Header has {len(names)} names but units row has {len(units)} fields."
-        )
+    has_units_row = any("[" in field for field in raw_units)
+    if has_units_row:
+        units = [unit.strip("[]") for unit in raw_units]
+        data_start = 2
+        if len(names) != len(units):
+            raise ValueError(
+                f"Header has {len(names)} names but units row has {len(units)} fields."
+            )
+    else:
+        units = [_default_unit(name) for name in names]
+        data_start = 1
 
     rows: list[list[float]] = []
-    for line_no, line in enumerate(lines[2:], start=3):
+    for line_no, line in enumerate(lines[data_start:], start=data_start + 1):
         fields = _split_fields(line)
         # Skip metadata footers / partial trailing lines.
         if len(fields) != len(names):
