@@ -12,6 +12,7 @@ import numpy as np
 from matplotlib import cm
 
 from tga_data import load_tga_file
+from tga_stats import format_stats, mass_loss_stats
 
 
 DEFAULT_PLOTS = (
@@ -149,8 +150,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Chart TGA/DSC text exports. Pass files and/or directories. "
-            "One file → multi-panel view; several files → overlay; "
-            "use --batch to export one figure per file."
+            "One file -> multi-panel view; several files -> overlay; "
+            "use --batch to export one figure per file. "
+            "Add --stats to print onset/cutoff and mark them on Ts plots."
         )
     )
     parser.add_argument(
@@ -197,6 +199,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print available columns for the first selected file and exit.",
     )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help=(
+            "Print T5/T50/T95, tangent onset, DTG peak, and main-step cutoff. "
+            "On Weight vs Ts (or any Ts x-axis) the values are drawn on the chart."
+        ),
+    )
     return parser
 
 
@@ -213,7 +223,70 @@ def _downsample(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return x[::stride], y[::stride]
 
 
-def plot_single(path: Path, x_name: str | None, y_name: str | None, output: str | None) -> None:
+STAT_MARKERS = (
+    ("t5_c", "T5", "#2ca02c", ":"),
+    ("t_peak_c", "DTG peak", "#ff7f0e", "--"),
+    ("t_cutoff_c", "Cutoff", "#d62728", "-."),
+)
+
+
+def _print_stats(path: Path, dataset) -> object | None:
+    try:
+        stats = mass_loss_stats(dataset)
+    except (KeyError, ValueError) as exc:
+        print(f"{display_name(path)}: could not compute stats ({exc})", file=sys.stderr)
+        return None
+    print(format_stats(display_name(path), stats))
+    return stats
+
+
+def _annotate_ts_stats(ax, stats) -> None:
+    if stats is None:
+        return
+    drawn = False
+    for attr, label, color, style in STAT_MARKERS:
+        value = getattr(stats, attr)
+        if not np.isfinite(value):
+            continue
+        ax.axvline(value, color=color, linestyle=style, linewidth=1.1, alpha=0.85, label=label)
+        drawn = True
+    box_rows = []
+    for attr, name in (
+        ("t5_c", "T5"),
+        ("t_onset_c", "Onset"),
+        ("t_peak_c", "DTG peak"),
+        ("t_cutoff_c", "Cutoff"),
+        ("t95_c", "T95"),
+    ):
+        value = getattr(stats, attr)
+        if np.isfinite(value):
+            box_rows.append(f"{name} {value:.0f} C")
+    if stats.isothermal:
+        box_rows.append("hold: T cutoff n/a")
+        box_rows.append(f"residual {stats.mass_final_pct:.1f} %")
+    if box_rows:
+        ax.text(
+            0.98,
+            0.97,
+            "\n".join(box_rows),
+            transform=ax.transAxes,
+            va="top",
+            ha="right",
+            fontsize=8,
+            family="monospace",
+            bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "#cccccc", "alpha": 0.9},
+        )
+    if drawn:
+        ax.legend(fontsize=8, loc="lower left", framealpha=0.9)
+
+
+def plot_single(
+    path: Path,
+    x_name: str | None,
+    y_name: str | None,
+    output: str | None,
+    show_stats: bool = False,
+) -> None:
     dataset = load_tga_file(path)
 
     if x_name or y_name:
@@ -236,6 +309,7 @@ def plot_single(path: Path, x_name: str | None, y_name: str | None, output: str 
 
     fig, axes = plt.subplots(rows, cols, figsize=(11, 4.2 * rows), squeeze=False)
     fig.suptitle(display_name(path))
+    stats = _print_stats(path, dataset) if show_stats else None
 
     for index, (x_col, y_col) in enumerate(pairs):
         ax = axes[index // cols][index % cols]
@@ -245,6 +319,8 @@ def plot_single(path: Path, x_name: str | None, y_name: str | None, output: str 
         ax.set_ylabel(dataset.label(y_col))
         ax.set_title(f"{y_col} vs {x_col}")
         ax.grid(True, alpha=0.3)
+        if stats is not None and x_col.casefold() == "ts":
+            _annotate_ts_stats(ax, stats)
 
     for index in range(len(pairs), rows * cols):
         axes[index // cols][index % cols].set_visible(False)
@@ -252,7 +328,13 @@ def plot_single(path: Path, x_name: str | None, y_name: str | None, output: str 
     _finish_figure(fig, output)
 
 
-def plot_overlay(paths: list[Path], x_name: str | None, y_name: str | None, output: str | None) -> None:
+def plot_overlay(
+    paths: list[Path],
+    x_name: str | None,
+    y_name: str | None,
+    output: str | None,
+    show_stats: bool = False,
+) -> None:
     x_col = x_name or DEFAULT_OVERLAY[0]
     y_col = y_name or DEFAULT_OVERLAY[1]
     if (x_name and not y_name) or (y_name and not x_name):
@@ -287,6 +369,8 @@ def plot_overlay(paths: list[Path], x_name: str | None, y_name: str | None, outp
         )
         label_x = label_x or dataset.label(x_col)
         label_y = label_y or dataset.label(y_col)
+        if show_stats:
+            _print_stats(path, dataset)
 
     ax.set_xlabel(label_x)
     ax.set_ylabel(label_y)
@@ -314,6 +398,7 @@ def plot_batch(
     x_name: str | None,
     y_name: str | None,
     output_dir: Path,
+    show_stats: bool = False,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     used_names: set[str] = set()
@@ -327,7 +412,7 @@ def plot_batch(
         used_names.add(candidate)
         out_path = output_dir / candidate
         print(f"Plotting {display_name(path)} -> {out_path}")
-        plot_single(path, x_name, y_name, str(out_path))
+        plot_single(path, x_name, y_name, str(out_path), show_stats=show_stats)
         plt.close("all")
     print(f"Saved {len(paths)} figure(s) under {output_dir}/")
 
@@ -370,13 +455,13 @@ def main() -> None:
         output_dir = Path(args.output)
         if output_dir.exists() and output_dir.is_file():
             raise SystemExit(f"--batch output must be a directory, got file: {output_dir}")
-        plot_batch(paths, args.x, args.y, output_dir)
+        plot_batch(paths, args.x, args.y, output_dir, show_stats=args.stats)
         return
 
     if len(paths) == 1:
-        plot_single(paths[0], args.x, args.y, args.output)
+        plot_single(paths[0], args.x, args.y, args.output, show_stats=args.stats)
     else:
-        plot_overlay(paths, args.x, args.y, args.output)
+        plot_overlay(paths, args.x, args.y, args.output, show_stats=args.stats)
 
 
 if __name__ == "__main__":

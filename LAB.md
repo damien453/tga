@@ -13,13 +13,14 @@ By the end of this lab you will be able to:
 5. Overlay multiple runs on one chart
 6. Plot an entire folder (overlay or batch export)
 7. Save figures to disk instead of opening a window
+8. Mark onset, DTG peak, and cutoff on a single-file chart
 
 ## Prerequisites
 
 - Python 3.10+ recommended
 - Repository checked out with the tracked `data/` exports present
 
-## Part 0 — Setup
+## Part 0 - Setup
 
 From the repository root:
 
@@ -35,11 +36,11 @@ Confirm the CLI is available:
 python chart.py --help
 ```
 
-You should see options for `-x` / `-y`, `-o`, `--batch`, `--recursive`, `--list-files`, and `--list-columns`.
+You should see options for `-x` / `-y`, `-o`, `--batch`, `--recursive`, `--list-files`, `--list-columns`, and `--stats`.
 
 > Tip: On headless machines (CI, SSH without a display), always pass `-o some.png` so Matplotlib does not try to open a GUI window. You can also set `MPLBACKEND=Agg`.
 
-## Part 1 — Explore the sample data
+## Part 1 - Explore the sample data
 
 All instrument exports live under `data/` and are **tracked in git** so everyone works from the same files.
 
@@ -73,9 +74,9 @@ Tr      [deg C]
 - [ ] `--list-files` prints paths under `data/` including at least one `EC Hold checks/...` entry
 - [ ] `--list-columns` shows `Ts`, `t`, `HF`, and `Weight`
 
-## Part 2 — Single-file default charts
+## Part 2 - Single-file default charts
 
-With one file and no `-x`/`-y`, the tool draws a 2×2 panel of the default pairs that exist in the file:
+With one file and no `-x`/`-y`, the tool draws a 2x2 panel of the default pairs that exist in the file:
 
 - Weight vs Ts
 - HF vs Ts
@@ -100,7 +101,7 @@ python chart.py data/WJM260723.txt -o lab_default.png
 - [ ] `lab_default.png` was written
 - [ ] The figure title matches the file name
 
-## Part 3 — Custom axes
+## Part 3 - Custom axes
 
 Plot a single series by choosing both axes:
 
@@ -122,7 +123,7 @@ Try it:
 python chart.py WJM260723.txt -x Ts
 ```
 
-## Part 4 — Multi-file overlays
+## Part 4 - Multi-file overlays
 
 Pass two or more files to overlay traces on one chart. Overlay mode defaults to **Weight vs Ts** unless you override with `-x` / `-y`. Large overlays are supported (legends move outside the plot; traces are lightly downsampled for speed).
 
@@ -142,7 +143,7 @@ Each trace is labeled with its file name (or relative path if names collide).
 
 - [ ] `lab_overlay.png` has a legend with both file names
 
-## Part 5 — Plot a whole folder
+## Part 5 - Plot a whole folder
 
 Pass a directory to select every `.txt` inside it. Folder names under `data/` can use spaces or hyphens interchangeably (`GrEC-Standard` matches `GrEC Standard`).
 
@@ -152,19 +153,22 @@ Pass a directory to select every `.txt` inside it. Folder names under `data/` ca
 python chart.py "GrEC Standard" -o grec_overlay.png
 python chart.py GrEC-Standard -o grec_overlay.png
 python chart.py "EC Hold checks" -o ec_hold_overlay.png
+python chart.py EC -o ec_overlay.png
 ```
 
 On Windows you can also pass an absolute path:
 
 ```bash
 python chart.py "C:\dev\tga\data\GrEC-Standard" -o grec_overlay.png
+python chart.py "C:\dev\tga\data\EC" -o ec_overlay.png
 ```
 
-**Batch mode** — one multi-panel figure per file, written into an output directory:
+**Batch mode** - one multi-panel figure per file, written into an output directory:
 
 ```bash
 python chart.py "GrEC Standard" --batch -o grec_charts/
 python chart.py "EC Hold checks" --batch -o ec_hold_charts/
+python chart.py EC --batch --stats -o ec_charts/
 ```
 
 Add `-r` / `--recursive` to include `.txt` files in subfolders of the given directory.
@@ -174,7 +178,7 @@ Add `-r` / `--recursive` to include `.txt` files in subfolders of the given dire
 - [ ] Folder overlay writes a single PNG with one legend entry per run
 - [ ] `--batch -o some_dir/` creates one PNG per input file
 
-## Part 6 — Ambiguous names and subfolders
+## Part 6 - Ambiguous names and subfolders
 
 Some basenames appear in more than one place (root `data/` and `data/EC Hold checks/`). A bare name then fails with the matching paths:
 
@@ -200,15 +204,115 @@ python chart.py "Barrel EC_O2.txt" -o lab_barrel.png
 - [ ] The ambiguous basename prints both candidate paths
 - [ ] Specifying `EC Hold checks/...` successfully saves a figure
 
-## Part 7 — Data format (optional reading)
+## Part 7 - Onset and cutoff on a single file
+
+`--stats` computes mass-loss temperatures for **one run at a time**, prints them in the terminal, and draws them on any panel whose x-axis is sample temperature `Ts`.
+
+Use this to compare Barrel, Sigma, and Pure EC. Do **not** compare a 310 C hold to an 800 C ramp.
+
+### What the numbers mean
+
+| Label on the chart | Meaning |
+| --- | --- |
+| **T5** (green dotted) | Temperature at 5% of the observed mass-loss step - practical onset of volatilization |
+| **Onset** (in the box) | Extrapolated tangent onset at the main DTG peak (ASTM-style) |
+| **DTG peak** (orange dashed) | Temperature of the steepest mass-loss rate during the main step |
+| **Cutoff** (red dash-dot) | Extrapolated tangent endset of that main step |
+| **T95** (in the box) | Temperature at 95% of the total mass-loss step - near-complete, including the slow tail |
+
+The main DTG peak is taken while residual mass is still 12-90%, so a late residue burnout (for example Sigma near 425 C) is not treated as the EC step.
+
+### Run one file (Weight vs Ts, markers on the chart)
+
+From the repository root, with the venv active. Names with spaces need quotes.
+
+```powershell
+python chart.py "Barrel EC_O2.txt" -x Ts -y Weight --stats -o barrel_stats.png
+python chart.py "Sigma EC_O2.txt" -x Ts -y Weight --stats -o sigma_stats.png
+python chart.py "2023_04_24_EC_Pure.txt" -x Ts -y Weight --stats -o pure_stats.png
+```
+
+You can also pass a path under `data/`:
+
+```powershell
+python chart.py "data/EC/Barrel EC_O2.txt" -x Ts -y Weight --stats -o barrel_stats.png
+```
+
+Omit `-o` to open an interactive window instead of saving a PNG.
+
+### How to read the chart
+
+Open `barrel_stats.png` (or the GUI window):
+
+1. The curve is **Weight vs Ts**.
+2. Three vertical lines mark **T5**, **DTG peak**, and **Cutoff**. Their styles match the legend in the lower left.
+3. The box in the **upper right** lists the same temperatures plus tangent onset and T95.
+4. The **terminal** prints the same table at 0.1 C precision - that is the copy to put in a notebook.
+
+Example terminal output for Barrel:
+
+```text
+Barrel EC_O2.txt
+  T5 onset               193.9 C
+  Tangent onset          267.5 C
+  T50                    293.1 C
+  DTG peak               303.6 C
+  Main-step cutoff       312.4 C
+  T95                    451.3 C
+  Mass loss               99.6 %
+  Final residual          -0.1 %
+  Heating rate            5.00 C/min
+```
+
+A slightly negative residual is an instrument zero after complete volatilization - treat it as ~0%.
+
+Expected T5 on the matched 5 C/min ramps: Barrel ~194 C, Sigma ~224 C, Pure (24 Apr) ~259 C.
+
+### Default 4-panel with stats
+
+If you omit `-x` / `-y`, markers are drawn on **every panel that uses Ts** (Weight vs Ts and HF vs Ts):
+
+```powershell
+python chart.py "Barrel EC_O2.txt" --stats -o barrel_panels.png
+```
+
+### Overlay: numbers in the terminal, not on every trace
+
+`--stats` with several files still prints one table per run. Vertical lines are only drawn on **single-file** charts, where they stay readable.
+
+```powershell
+python chart.py "Barrel EC_O2.txt" "Sigma EC_O2.txt" "2023_04_24_EC_Pure.txt" --stats -o ec_overlay.png
+```
+
+### Holds are flagged
+
+A 310 C isothermal file still prints temperatures, but they are **not** comparable to a 5 C/min ramp. The tool adds a note:
+
+```powershell
+python chart.py "2023-04-26_EC_pure_anneal.txt" --stats -o anneal_stats.png
+```
+
+```text
+  Note: furnace is a hold (heating rate ~0). Temperature statistics are not comparable to a ramp.
+```
+
+### Checkpoint
+
+- [ ] `barrel_stats.png` has a Weight vs Ts curve, three colored vertical lines, a legend, and a stats box
+- [ ] The terminal T5 for Barrel is near 194 C, Sigma near 224 C, Pure (24 Apr) near 259 C
+- [ ] The anneal hold prints the isothermal note
+
+## Part 8 - Data format (optional reading)
 
 Exports are whitespace-delimited text:
 
-1. Line 1 — column names (`Index Ts t HF Weight Tr`)
-2. Line 2 — units in brackets (`[#] [°C] [s] [mW] [mg] [°C]`)
-3. Remaining lines — scientific-notation values
+1. Line 1 - column names (`Index Ts t HF Weight Tr`)
+2. Line 2 - units in brackets (`[#] [deg C] [s] [mW] [mg] [deg C]`)
+3. Remaining lines - scientific-notation values
 
-Files are read as Latin-1 so degree symbols from the instrument software parse correctly. Trailing metadata or incomplete rows are skipped. Parsing lives in `tga_data.py` (`load_tga_file`).
+The units row is optional. If line 2 is already numeric (as in some Pure EC exports), default units are assumed.
+
+Files are read as Latin-1 so degree symbols from the instrument software parse correctly. Trailing metadata or incomplete rows are skipped. Parsing lives in `tga_data.py` (`load_tga_file`). Statistics live in `tga_stats.py` (`mass_loss_stats`).
 
 ## Quick reference
 
@@ -219,13 +323,15 @@ Files are read as Latin-1 so degree symbols from the instrument software parse c
 | List columns | `python chart.py FILE --list-columns` |
 | Default 4-panel | `python chart.py FILE -o out.png` |
 | Custom axes | `python chart.py FILE -x Ts -y Weight -o out.png` |
+| Single file with stats | `python chart.py FILE -x Ts -y Weight --stats -o out.png` |
 | Overlay runs | `python chart.py FILE1 FILE2 -o out.png` |
 | Overlay custom | `python chart.py FILE1 FILE2 -x t -y HF -o out.png` |
 | Folder overlay | `python chart.py "GrEC Standard" -o out.png` |
 | Folder batch | `python chart.py "GrEC Standard" --batch -o charts/` |
+| EC folder + stats | `python chart.py EC --batch --stats -o ec_charts/` |
 
 Generated `*.png` files are gitignored; keep them local or attach them outside the repo.
 
 ## Wrap-up
 
-You should now be able to discover tracked sample data, inspect columns, plot single and overlaid TGA/DSC runs, chart whole folders, and export PNGs for reports. For further experiments, try overlaying a hold-temperature series from `EC Hold checks/` or batch-exporting `VXGr Annealing Study/`.
+You should now be able to discover tracked sample data, inspect columns, plot single and overlaid TGA/DSC runs, chart whole folders, mark onset/cutoff on a single file with `--stats`, and export PNGs for reports. For further experiments, try the `data/EC` ramps one file at a time, overlaying a hold-temperature series from `EC Hold checks/`, or batch-exporting `VXGr Annealing Study/`.
