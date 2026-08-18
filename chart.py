@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
 import re
+import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -26,6 +30,7 @@ DATA_DIR = Path("data")
 # Soft guidance only; large folders are supported.
 WARN_TRACES = 25
 MAX_POINTS_PER_TRACE = 4000
+_GUI_CHILD_ENV = "TGA_CHART_GUI"
 TRACE_COLORS = [
     "#1f77b4",
     "#ff7f0e",
@@ -170,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-y",
         "--y",
         default=None,
-        help="Y-axis column (default for overlays: Weight).",
+        help="Y-axis column (default for overlays: Weight). Use Weight% for mass vs initial.",
     )
     parser.add_argument(
         "-o",
@@ -198,6 +203,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--list-columns",
         action="store_true",
         help="Print available columns for the first selected file and exit.",
+    )
+    parser.add_argument(
+        "--list-duplicates",
+        action="store_true",
+        help=(
+            "List duplicate .txt files under data/ (or given folders): "
+            "same filename in multiple places, and identical contents."
+        ),
+    )
+    parser.add_argument(
+        "--wait",
+        action="store_true",
+        help=(
+            "Keep this process open until the chart window is closed "
+            "(default: the window stays open and the terminal returns)."
+        ),
     )
     parser.add_argument(
         "--stats",
@@ -417,18 +438,105 @@ def plot_batch(
     print(f"Saved {len(paths)} figure(s) under {output_dir}/")
 
 
+def collect_txt_files(file_args: list[str]) -> list[Path]:
+    if not file_args:
+        return discover_data_files()
+    files: list[Path] = []
+    seen: set[Path] = set()
+    for file_arg in file_args:
+        path = Path(file_arg)
+        if not path.exists():
+            under = DATA_DIR / file_arg
+            path = under if under.exists() else path
+        if path.is_dir():
+            candidates = sorted(p for p in path.rglob("*.txt") if p.is_file())
+        elif path.is_file():
+            candidates = [path]
+        else:
+            raise SystemExit(f"File or directory not found: {file_arg}")
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            files.append(resolved)
+    return files
+
+
+def list_duplicates(files: list[Path]) -> None:
+    if not files:
+        print("No .txt files to compare.", file=sys.stderr)
+        raise SystemExit(1)
+
+    by_name: dict[str, list[Path]] = defaultdict(list)
+    by_hash: dict[str, list[Path]] = defaultdict(list)
+    for path in files:
+        by_name[path.name].append(path)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        by_hash[digest].append(path)
+
+    name_groups = [paths for paths in by_name.values() if len(paths) > 1]
+    hash_groups = [paths for paths in by_hash.values() if len(paths) > 1]
+
+    print(f"Same filename ({len(name_groups)} groups)")
+    if not name_groups:
+        print("  none")
+    else:
+        for paths in sorted(name_groups, key=lambda group: group[0].name.casefold()):
+            print(f"  {paths[0].name}  ({len(paths)} copies)")
+            for path in paths:
+                print(f"    {display_name(path)}")
+
+    print()
+    print(f"Identical contents ({len(hash_groups)} groups)")
+    if not hash_groups:
+        print("  none")
+    else:
+        for paths in sorted(hash_groups, key=lambda group: (-len(group), display_name(group[0]))):
+            print(f"  {len(paths)} copies")
+            for path in paths:
+                print(f"    {display_name(path)}")
+
+
 def _finish_figure(fig, output: str | None) -> None:
     if output:
         out_path = Path(output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=150, bbox_inches="tight")
         print(f"Saved {out_path}")
+        plt.close(fig)
     else:
-        plt.show()
+        plt.show(block=True)
+
+
+def _spawn_chart_window() -> None:
+    """Start a child that owns the GUI so this process can exit."""
+    env = os.environ.copy()
+    env[_GUI_CHILD_ENV] = "1"
+    kwargs: dict = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen([sys.executable, *sys.argv], env=env, **kwargs)
+    print("Opened a chart window. Close that window when you are done.", file=sys.stderr)
 
 
 def main() -> None:
     args = build_parser().parse_args()
+
+    showing_window = (
+        not args.output
+        and not args.batch
+        and not args.list_files
+        and not args.list_columns
+        and not args.list_duplicates
+        and not args.wait
+        and bool(args.files)
+    )
+    if showing_window and os.environ.get(_GUI_CHILD_ENV) != "1":
+        _spawn_chart_window()
+        return
 
     if args.list_files:
         files = discover_data_files()
@@ -439,6 +547,11 @@ def main() -> None:
             print(display_name(path))
         return
 
+    if args.list_duplicates:
+        files = collect_txt_files(args.files)
+        list_duplicates(files)
+        return
+
     paths = resolve_data_files(args.files, recursive=args.recursive)
     print(f"Selected {len(paths)} file(s).", file=sys.stderr)
 
@@ -447,6 +560,7 @@ def main() -> None:
         for name, unit in zip(dataset.names, dataset.units):
             safe_unit = unit.replace("\xb0", "deg ")
             print(f"{name}\t[{safe_unit}]")
+        print("Weight%\t[% of initial]")
         return
 
     if args.batch:

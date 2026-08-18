@@ -8,6 +8,9 @@ from pathlib import Path
 import numpy as np
 
 
+DERIVED_WEIGHT_PCT = frozenset({"weight%", "mass%", "masspct", "weightpct"})
+
+
 @dataclass(frozen=True)
 class TgaDataset:
     """Parsed TGA/DSC table with named columns and units."""
@@ -17,7 +20,7 @@ class TgaDataset:
     units: list[str]
     columns: dict[str, np.ndarray]
 
-    def series(self, name: str) -> np.ndarray:
+    def _column(self, name: str) -> np.ndarray:
         key = name.casefold()
         for column_name, values in self.columns.items():
             if column_name.casefold() == key:
@@ -25,8 +28,27 @@ class TgaDataset:
         available = ", ".join(self.names)
         raise KeyError(f"Unknown column {name!r}. Available: {available}")
 
+    def initial_weight_mg(self) -> float:
+        """Median of the first 50 Weight points (same baseline as --stats)."""
+        weight = self._column("Weight")
+        w0 = float(np.median(weight[: min(50, len(weight))]))
+        if w0 == 0:
+            w0 = float(weight[0])
+        if w0 == 0:
+            raise ValueError(f"{self.path}: initial mass is zero.")
+        return w0
+
+    def series(self, name: str) -> np.ndarray:
+        key = name.casefold()
+        if key in DERIVED_WEIGHT_PCT:
+            weight = self._column("Weight")
+            return 100.0 * weight / self.initial_weight_mg()
+        return self._column(name)
+
     def label(self, name: str) -> str:
         key = name.casefold()
+        if key in DERIVED_WEIGHT_PCT:
+            return "Weight [% of initial]"
         for column_name, unit in zip(self.names, self.units):
             if column_name.casefold() == key:
                 return f"{column_name} [{unit}]" if unit else column_name

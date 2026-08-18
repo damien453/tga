@@ -68,9 +68,7 @@ def mass_loss_stats(dataset: TgaDataset) -> MassLossStats:
     except KeyError:
         heating_rate = _heating_rate_c_per_min(ts_raw, time_s)
 
-    w0 = float(np.median(weight_raw[: min(50, len(weight_raw))]))
-    if w0 == 0:
-        w0 = float(weight_raw[0])
+    w0 = dataset.initial_weight_mg()
     mass_final_pct = float(100.0 * weight_raw[-1] / w0)
     isothermal = bool(np.isfinite(heating_rate) and abs(heating_rate) < 1.5)
 
