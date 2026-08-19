@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+_COLUMN_ALIASES = {
+    "x value": "t",
+    "xvalue": "t",
+    "y value": "Weight",
+    "yvalue": "Weight",
+}
 
 
 DERIVED_WEIGHT_PCT = frozenset({"weight%", "mass%", "masspct", "weightpct"})
@@ -59,6 +67,24 @@ def _split_fields(line: str) -> list[str]:
     return line.split()
 
 
+def _split_header_fields(line: str) -> list[str]:
+    """Keep multi-word names such as 'x value' / 'y value' from older exports."""
+    parts = [part.strip() for part in re.split(r"\s{2,}", line.strip()) if part.strip()]
+    return parts if len(parts) >= 2 else _split_fields(line)
+
+
+def _normalize_column_name(name: str) -> str:
+    key = " ".join(name.split()).casefold()
+    return _COLUMN_ALIASES.get(key, name)
+
+
+def _looks_like_header(names: list[str]) -> bool:
+    keys = {" ".join(name.split()).casefold() for name in names}
+    has_index_or_ts = "index" in keys or "ts" in keys
+    has_mass = bool(keys & {"weight", "y value", "yvalue"})
+    return has_index_or_ts and (has_mass or "t" in keys or "x value" in keys or "hf" in keys)
+
+
 def _default_unit(name: str) -> str:
     key = name.casefold()
     if key in {"ts", "tr"}:
@@ -79,11 +105,13 @@ def load_tga_file(path: str | Path) -> TgaDataset:
     Parse a TGA text export.
 
     Expected layout:
-      line 1: column names (e.g. Index Ts t HF Weight Tr)
-      line 2: units        (e.g. [#] [deg C] [s] [mW] [mg] [deg C])
-      line 3+: whitespace-separated scientific values
+      column names (e.g. Index Ts t HF Weight Tr)
+      optional units (e.g. [#] [deg C] [s] [mW] [mg] [deg C])
+      whitespace-separated numeric rows
 
-    The units row is optional. If line 2 is numeric data, default units are used.
+    Older STA exports may start with a date / Curve Name preamble and use
+    'x value' / 'y value' for time and mass. Those are mapped to t and Weight.
+    The units row is optional. If the next row is numeric, default units are used.
     """
     file_path = Path(path)
     # Instrument exports often use Latin-1 degree symbols (0xB0), not UTF-8.
@@ -92,19 +120,31 @@ def load_tga_file(path: str | Path) -> TgaDataset:
     if len(lines) < 2:
         raise ValueError(f"{file_path} needs a header and data.")
 
-    names = _split_fields(lines[0])
-    raw_units = _split_fields(lines[1])
+    header_i = None
+    names: list[str] = []
+    for index, line in enumerate(lines):
+        candidate = [_normalize_column_name(part) for part in _split_header_fields(line)]
+        if _looks_like_header(candidate):
+            header_i = index
+            names = candidate
+            break
+    if header_i is None:
+        raise ValueError(f"{file_path}: no TGA column header found.")
+
+    raw_units = _split_header_fields(lines[header_i + 1]) if header_i + 1 < len(lines) else []
     has_units_row = any("[" in field for field in raw_units)
     if has_units_row:
         units = [unit.strip("[]") for unit in raw_units]
-        data_start = 2
+        data_start = header_i + 2
+        if len(units) == len(names) - 1:
+            units = [""] + units
         if len(names) != len(units):
             raise ValueError(
                 f"Header has {len(names)} names but units row has {len(units)} fields."
             )
     else:
         units = [_default_unit(name) for name in names]
-        data_start = 1
+        data_start = header_i + 1
 
     rows: list[list[float]] = []
     for line_no, line in enumerate(lines[data_start:], start=data_start + 1):

@@ -128,6 +128,47 @@ def resolve_one(file_arg: str, recursive: bool) -> list[Path]:
     raise SystemExit(f"File or directory not found: {file_arg}")
 
 
+def _split_file_args(file_args: list[str]) -> list[str]:
+    """Turn one or more arguments into individual paths, including multi-line lists."""
+    items: list[str] = []
+    for raw in file_args:
+        text = raw.replace("\r\n", "\n").replace("\r", "\n")
+        for line in text.split("\n"):
+            name = line.strip().strip('"').strip("'")
+            if not name or name.startswith("#"):
+                continue
+            items.append(name)
+    return items
+
+
+def _read_stdin_file_args() -> list[str]:
+    return _split_file_args([sys.stdin.read()])
+
+
+def _collect_cli_file_args(parsed_files: list[str]) -> list[str]:
+    file_args = _split_file_args(parsed_files)
+    if not file_args and not sys.stdin.isatty():
+        file_args = _read_stdin_file_args()
+    return file_args
+
+
+def _prompt_file_args() -> list[str]:
+    print(
+        "Paste file paths, one per line. Empty line to finish.",
+        file=sys.stderr,
+    )
+    lines: list[str] = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if not line.strip():
+            break
+        lines.append(line)
+    return _split_file_args(["\n".join(lines)]) if lines else []
+
+
 def resolve_data_files(file_args: list[str], recursive: bool) -> list[Path]:
     if not file_args:
         raise SystemExit(
@@ -136,7 +177,11 @@ def resolve_data_files(file_args: list[str], recursive: bool) -> list[Path]:
             "  python chart.py data/WJM260723.txt\n"
             "  python chart.py \"GrEC Standard\" -o grec_overlay.png\n"
             "  python chart.py \"GrEC Standard\" --batch -o charts/\n"
-            "  python chart.py --list-files"
+            "  python chart.py --list-files\n"
+            "  python chart.py @\"\n"
+            "path1.txt\n"
+            "path2.txt\n"
+            "\"@"
         )
 
     resolved: list[Path] = []
@@ -162,7 +207,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "files",
         nargs="*",
-        help="TGA text files and/or directories (names under data/ are OK).",
+        help=(
+            "TGA text files and/or directories (names under data/ are OK). "
+            "Paste several paths in a quoted multi-line block, or pipe a list "
+            "(one path per line; blank lines and # comments are ignored)."
+        ),
     )
     parser.add_argument(
         "-x",
@@ -539,7 +588,7 @@ def _finish_figure(fig, output: str | None) -> None:
         plt.show(block=True)
 
 
-def _spawn_chart_window() -> None:
+def _spawn_chart_window(extra_args: list[str] | None = None) -> None:
     """Start a child that owns the GUI so this process can exit."""
     env = os.environ.copy()
     env[_GUI_CHILD_ENV] = "1"
@@ -548,12 +597,26 @@ def _spawn_chart_window() -> None:
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen([sys.executable, *sys.argv], env=env, **kwargs)
+    command = [sys.executable, *sys.argv]
+    if extra_args:
+        command.extend(extra_args)
+    subprocess.Popen(command, env=env, **kwargs)
     print("Opened a chart window. Close that window when you are done.", file=sys.stderr)
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    positional_files = list(args.files)
+    args.files = _collect_cli_file_args(args.files)
+    if (
+        not args.files
+        and not args.list_files
+        and not args.list_duplicates
+        and sys.stdin.isatty()
+        and os.environ.get(_GUI_CHILD_ENV) != "1"
+    ):
+        args.files = _prompt_file_args()
+    extra_files = (not positional_files) and bool(args.files)
 
     showing_window = (
         not args.output
@@ -565,7 +628,7 @@ def main() -> None:
         and bool(args.files)
     )
     if showing_window and os.environ.get(_GUI_CHILD_ENV) != "1":
-        _spawn_chart_window()
+        _spawn_chart_window(args.files if extra_files else None)
         return
 
     if args.list_files:
