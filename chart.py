@@ -15,17 +15,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
 
-from tga_data import load_tga_file
+from tga_data import DERIVED_WEIGHT_PCT, load_tga_file
 from tga_stats import format_stats, mass_loss_stats
 
 
 DEFAULT_PLOTS = (
-    ("Ts", "Weight"),
+    ("Ts", "Weight%"),
     ("Ts", "HF"),
-    ("t", "Weight"),
+    ("t", "Weight%"),
     ("t", "HF"),
 )
-DEFAULT_OVERLAY = ("Ts", "Weight")
 DATA_DIR = Path("data")
 # Soft guidance only; large folders are supported.
 WARN_TRACES = 25
@@ -154,10 +153,10 @@ def resolve_data_files(file_args: list[str], recursive: bool) -> list[Path]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Chart TGA/DSC text exports. Pass files and/or directories. "
-            "One file -> multi-panel view; several files -> overlay; "
-            "use --batch to export one figure per file. "
-            "Add --stats to print onset/cutoff and mark them on Ts plots."
+            "Chart TGA/DSC text exports. Default is a 4-panel window "
+            "(Weight% and HF vs Ts and vs time) with mass-loss stats marked. "
+            "Several files overlay on those same panels. "
+            "Use --batch to export one figure per file."
         )
     )
     parser.add_argument(
@@ -175,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-y",
         "--y",
         default=None,
-        help="Y-axis column (default for overlays: Weight). Use Weight% for mass vs initial.",
+        help="Y-axis column (default 4-panel uses Weight%; custom overlay default is Weight%).",
     )
     parser.add_argument(
         "-o",
@@ -220,13 +219,18 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: the window stays open and the terminal returns)."
         ),
     )
+    parser.set_defaults(stats=True)
     parser.add_argument(
         "--stats",
+        dest="stats",
         action="store_true",
-        help=(
-            "Print T5/T50/T95, tangent onset, DTG peak, and main-step cutoff. "
-            "On Weight vs Ts (or any Ts x-axis) the values are drawn on the chart."
-        ),
+        help="Print mass-loss stats and mark early onset / DTG peak / cutoff on Ts panels (default).",
+    )
+    parser.add_argument(
+        "--no-stats",
+        dest="stats",
+        action="store_false",
+        help="Disable mass-loss tables and chart markers.",
     )
     return parser
 
@@ -245,10 +249,24 @@ def _downsample(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 STAT_MARKERS = (
-    ("t5_c", "T5", "#2ca02c", ":"),
+    ("t_early_c", "Early", "#2ca02c", ":"),
     ("t_peak_c", "DTG peak", "#ff7f0e", "--"),
     ("t_cutoff_c", "Cutoff", "#d62728", "-."),
 )
+
+
+def _has_series(dataset, name: str) -> bool:
+    key = name.casefold()
+    if key in DERIVED_WEIGHT_PCT:
+        return any(column.casefold() == "weight" for column in dataset.names)
+    return any(column.casefold() == key for column in dataset.names)
+
+
+def _trace_names(paths: list[Path]) -> list[str]:
+    names = [short_label(path) for path in paths]
+    if len(set(names)) != len(names):
+        return [display_name(path) for path in paths]
+    return names
 
 
 def _print_stats(path: Path, dataset) -> object | None:
@@ -261,23 +279,37 @@ def _print_stats(path: Path, dataset) -> object | None:
     return stats
 
 
-def _annotate_ts_stats(ax, stats) -> None:
+def _annotate_ts_stats(
+    ax,
+    stats,
+    *,
+    color: str | None = None,
+    show_box: bool = True,
+    labeled: bool = False,
+) -> None:
     if stats is None:
         return
-    drawn = False
-    for attr, label, color, style in STAT_MARKERS:
+    for attr, label, marker_color, style in STAT_MARKERS:
         value = getattr(stats, attr)
         if not np.isfinite(value):
             continue
-        ax.axvline(value, color=color, linestyle=style, linewidth=1.1, alpha=0.85, label=label)
-        drawn = True
+        ax.axvline(
+            value,
+            color=color or marker_color,
+            linestyle=style,
+            linewidth=1.0 if color else 1.1,
+            alpha=0.8,
+            label=label if labeled else None,
+        )
+    if not show_box:
+        return
     box_rows = []
     for attr, name in (
-        ("t5_c", "T5"),
+        ("t_early_c", "Early"),
+        ("t1_c", "T1"),
         ("t_onset_c", "Onset"),
         ("t_peak_c", "DTG peak"),
         ("t_cutoff_c", "Cutoff"),
-        ("t95_c", "T95"),
     ):
         value = getattr(stats, attr)
         if np.isfinite(value):
@@ -297,69 +329,36 @@ def _annotate_ts_stats(ax, stats) -> None:
             family="monospace",
             bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "#cccccc", "alpha": 0.9},
         )
-    if drawn:
-        ax.legend(fontsize=8, loc="lower left", framealpha=0.9)
 
 
-def plot_single(
-    path: Path,
+def plot_charts(
+    paths: list[Path],
     x_name: str | None,
     y_name: str | None,
     output: str | None,
-    show_stats: bool = False,
+    show_stats: bool = True,
 ) -> None:
-    dataset = load_tga_file(path)
+    datasets = [load_tga_file(path) for path in paths]
+    names = _trace_names(paths)
 
     if x_name or y_name:
         if not x_name or not y_name:
             raise SystemExit("Both --x and --y are required for a custom plot.")
         pairs = ((x_name, y_name),)
-        cols = 1
-        rows = 1
     else:
-        available = {name.casefold() for name in dataset.names}
         pairs = tuple(
-            (x, y)
-            for x, y in DEFAULT_PLOTS
-            if x.casefold() in available and y.casefold() in available
+            (x_col, y_col)
+            for x_col, y_col in DEFAULT_PLOTS
+            if all(_has_series(dataset, x_col) and _has_series(dataset, y_col) for dataset in datasets)
         )
         if not pairs:
-            raise SystemExit("No default column pairs found in this file.")
-        cols = 2
-        rows = (len(pairs) + 1) // 2
+            raise SystemExit("No default column pairs found in these files.")
 
-    fig, axes = plt.subplots(rows, cols, figsize=(11, 4.2 * rows), squeeze=False)
-    fig.suptitle(display_name(path))
-    stats = _print_stats(path, dataset) if show_stats else None
-
-    for index, (x_col, y_col) in enumerate(pairs):
-        ax = axes[index // cols][index % cols]
-        x_vals, y_vals = _downsample(dataset.series(x_col), dataset.series(y_col))
-        ax.plot(x_vals, y_vals, color=TRACE_COLORS[0], linewidth=1.1)
-        ax.set_xlabel(dataset.label(x_col))
-        ax.set_ylabel(dataset.label(y_col))
-        ax.set_title(f"{y_col} vs {x_col}")
-        ax.grid(True, alpha=0.3)
-        if stats is not None and x_col.casefold() == "ts":
-            _annotate_ts_stats(ax, stats)
-
-    for index in range(len(pairs), rows * cols):
-        axes[index // cols][index % cols].set_visible(False)
-
-    _finish_figure(fig, output)
-
-
-def plot_overlay(
-    paths: list[Path],
-    x_name: str | None,
-    y_name: str | None,
-    output: str | None,
-    show_stats: bool = False,
-) -> None:
-    x_col = x_name or DEFAULT_OVERLAY[0]
-    y_col = y_name or DEFAULT_OVERLAY[1]
-    if (x_name and not y_name) or (y_name and not x_name):
-        raise SystemExit("Both --x and --y are required when overriding overlay axes.")
+    n_panel = len(pairs)
+    cols = 1 if n_panel == 1 else 2
+    rows = (n_panel + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(12, 4.1 * rows), squeeze=False)
+    fig.suptitle(display_name(paths[0]) if len(paths) == 1 else f"{len(paths)} runs")
 
     if len(paths) > WARN_TRACES:
         print(
@@ -368,50 +367,81 @@ def plot_overlay(
             file=sys.stderr,
         )
 
-    fig_width = 12 if len(paths) <= 12 else 14
-    fig, ax = plt.subplots(figsize=(fig_width, 7))
-    label_x = None
-    label_y = None
-    # Prefer short labels; disambiguate duplicates with relative path.
-    names = [short_label(path) for path in paths]
-    if len(set(names)) != len(names):
-        names = [display_name(path) for path in paths]
+    stats_list = [_print_stats(path, dataset) if show_stats else None for path, dataset in zip(paths, datasets)]
+    alpha = 0.9 if len(paths) < 20 else 0.75
+    single = len(paths) == 1
 
-    for index, path in enumerate(paths):
-        dataset = load_tga_file(path)
-        x_vals, y_vals = _downsample(dataset.series(x_col), dataset.series(y_col))
-        ax.plot(
-            x_vals,
-            y_vals,
-            color=_trace_color(index, len(paths)),
-            linewidth=1.1,
-            label=names[index],
-            alpha=0.9 if len(paths) < 20 else 0.75,
-        )
-        label_x = label_x or dataset.label(x_col)
-        label_y = label_y or dataset.label(y_col)
-        if show_stats:
-            _print_stats(path, dataset)
+    for index, (x_col, y_col) in enumerate(pairs):
+        ax = axes[index // cols][index % cols]
+        label_x = None
+        label_y = None
+        for trace_i, dataset in enumerate(datasets):
+            color = _trace_color(trace_i, len(paths))
+            x_vals, y_vals = _downsample(dataset.series(x_col), dataset.series(y_col))
+            ax.plot(
+                x_vals,
+                y_vals,
+                color=color,
+                linewidth=1.1,
+                alpha=alpha,
+                label=names[trace_i] if index == 0 else None,
+            )
+            label_x = label_x or dataset.label(x_col)
+            label_y = label_y or dataset.label(y_col)
+            if stats_list[trace_i] is not None and x_col.casefold() == "ts":
+                _annotate_ts_stats(
+                    ax,
+                    stats_list[trace_i],
+                    color=None if single else color,
+                    show_box=single,
+                    labeled=single,
+                )
+        ax.set_xlabel(label_x)
+        ax.set_ylabel(label_y)
+        ax.set_title(f"{y_col} vs {x_col}")
+        ax.grid(True, alpha=0.3)
+        if single and show_stats and x_col.casefold() == "ts":
+            ax.legend(fontsize=8, loc="lower left", framealpha=0.9)
 
-    ax.set_xlabel(label_x)
-    ax.set_ylabel(label_y)
-    ax.set_title(f"{y_col} vs {x_col} ({len(paths)} runs)")
-    ax.grid(True, alpha=0.3)
+    for index in range(n_panel, rows * cols):
+        axes[index // cols][index % cols].set_visible(False)
 
-    legend_fontsize = 8 if len(paths) <= 15 else 6
-    if len(paths) <= 8:
-        ax.legend(fontsize=legend_fontsize, loc="best")
-        fig.tight_layout()
+    if not single:
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        legend_fontsize = 8 if len(paths) <= 15 else 6
+        if len(paths) <= 8:
+            fig.legend(
+                handles,
+                labels,
+                loc="lower center",
+                ncol=min(len(paths), 4),
+                fontsize=legend_fontsize,
+                bbox_to_anchor=(0.5, 0.01),
+            )
+            fig.tight_layout(rect=(0, 0.08, 1, 0.96))
+        else:
+            fig.legend(
+                handles,
+                labels,
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                fontsize=legend_fontsize,
+            )
+            fig.tight_layout(rect=(0, 0, 0.78, 0.96))
     else:
-        ax.legend(
-            fontsize=legend_fontsize,
-            loc="center left",
-            bbox_to_anchor=(1.02, 0.5),
-            borderaxespad=0,
-        )
-        fig.tight_layout(rect=(0, 0, 0.78, 1))
+        fig.tight_layout()
 
     _finish_figure(fig, output)
+
+
+def plot_single(
+    path: Path,
+    x_name: str | None,
+    y_name: str | None,
+    output: str | None,
+    show_stats: bool = True,
+) -> None:
+    plot_charts([path], x_name, y_name, output, show_stats=show_stats)
 
 
 def plot_batch(
@@ -419,7 +449,7 @@ def plot_batch(
     x_name: str | None,
     y_name: str | None,
     output_dir: Path,
-    show_stats: bool = False,
+    show_stats: bool = True,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     used_names: set[str] = set()
@@ -572,10 +602,7 @@ def main() -> None:
         plot_batch(paths, args.x, args.y, output_dir, show_stats=args.stats)
         return
 
-    if len(paths) == 1:
-        plot_single(paths[0], args.x, args.y, args.output, show_stats=args.stats)
-    else:
-        plot_overlay(paths, args.x, args.y, args.output, show_stats=args.stats)
+    plot_charts(paths, args.x, args.y, args.output, show_stats=args.stats)
 
 
 if __name__ == "__main__":

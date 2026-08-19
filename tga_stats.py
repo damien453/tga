@@ -13,10 +13,12 @@ from tga_data import TgaDataset
 class MassLossStats:
     """Characteristic temperatures in deg C and residual-mass percentages."""
 
+    t1_c: float
     t5_c: float
     t10_c: float
     t50_c: float
     t95_c: float
+    t_early_c: float
     t_onset_c: float
     t_cutoff_c: float
     t_peak_c: float
@@ -48,9 +50,51 @@ def _heating_rate_c_per_min(temperature: np.ndarray, time_s: np.ndarray) -> floa
     return float((temperature[i1] - temperature[i0]) / dt * 60.0)
 
 
+def _baseline_divergence_onset(
+    ts: np.ndarray,
+    mass_s: np.ndarray,
+    m_base: float,
+    t1_c: float,
+    peak_i: int,
+    total_loss: float,
+) -> float:
+    """
+    First Ts where residual mass leaves the pre-reaction slope.
+
+    Fits Weight% vs Ts on the plateau before T1, then finds the first later
+    point that stays at least 0.3 wt% below that extrapolated line. Linear
+    buoyancy/drift is ignored; a real knee is not. This is much earlier than
+    T5 (5% of the whole step).
+    """
+    if peak_i < 12:
+        return float("nan")
+    if np.isfinite(t1_c):
+        i1 = int(np.searchsorted(ts, t1_c))
+        i1 = min(max(i1, 12), int(peak_i))
+    else:
+        lost = float(m_base) - mass_s
+        i1 = int(np.argmax(lost >= 0.3))
+        if lost[i1] < 0.3:
+            i1 = max(int(peak_i) // 3, 12)
+    fit_end = max(int(0.75 * i1), 12)
+    i0 = min(max(fit_end // 10, 0), max(fit_end - 8, 0))
+    if fit_end - i0 < 8:
+        return float("nan")
+    coef = np.polyfit(ts[i0:fit_end], mass_s[i0:fit_end], 1)
+    deviation = np.polyval(coef, ts) - mass_s
+    threshold = max(0.30, 0.004 * float(total_loss))
+    above = deviation[fit_end:] >= threshold
+    run = np.convolve(above.astype(np.int8), np.ones(5, dtype=np.int8), mode="valid")
+    if len(run) == 0 or not np.any(run >= 5):
+        return float("nan")
+    hit = int(np.argmax(run >= 5))
+    return float(ts[fit_end + hit])
+
+
 def mass_loss_stats(dataset: TgaDataset) -> MassLossStats:
     """
-    T5/T50/T95 plus ASTM-style tangent onset/cutoff at the main DTG peak.
+    Early baseline-divergence onset, T1/T5/T50/T95, and ASTM-style tangent
+    onset/cutoff at the main DTG peak.
 
     Residual mass is 100% at the initial weight plateau. The main peak is the
     steepest loss while residual mass is still 12-90%, so a late residue
@@ -99,16 +143,24 @@ def mass_loss_stats(dataset: TgaDataset) -> MassLossStats:
 
     converted = lost / total_loss
     t_at: dict[str, float] = {}
-    for frac, key in ((0.05, "t5_c"), (0.10, "t10_c"), (0.50, "t50_c"), (0.95, "t95_c")):
+    for frac, key in (
+        (0.01, "t1_c"),
+        (0.05, "t5_c"),
+        (0.10, "t10_c"),
+        (0.50, "t50_c"),
+        (0.95, "t95_c"),
+    ):
         i = int(np.argmax(converted >= frac))
         t_at[key] = float(ts[i]) if converted[i] >= frac else float("nan")
 
     if isothermal:
         return MassLossStats(
+            t1_c=t_at["t1_c"],
             t5_c=t_at["t5_c"],
             t10_c=t_at["t10_c"],
             t50_c=t_at["t50_c"],
             t95_c=t_at["t95_c"],
+            t_early_c=float("nan"),
             t_onset_c=float("nan"),
             t_cutoff_c=float("nan"),
             t_peak_c=float("nan"),
@@ -139,12 +191,17 @@ def mass_loss_stats(dataset: TgaDataset) -> MassLossStats:
 
     t_onset = t_peak + (m_base - m_peak) / slope
     t_cutoff = t_peak + (m_end_step - m_peak) / slope
+    t_early = _baseline_divergence_onset(
+        ts, mass_s, m_base, t_at["t1_c"], peak_i, total_loss
+    )
 
     return MassLossStats(
+        t1_c=t_at["t1_c"],
         t5_c=t_at["t5_c"],
         t10_c=t_at["t10_c"],
         t50_c=t_at["t50_c"],
         t95_c=t_at["t95_c"],
+        t_early_c=float(t_early),
         t_onset_c=float(t_onset),
         t_cutoff_c=float(t_cutoff),
         t_peak_c=t_peak,
@@ -165,7 +222,9 @@ def _fmt_c(value: float) -> str:
 def format_stats(label: str, stats: MassLossStats) -> str:
     lines = [
         f"{label}",
-        f"  T5 onset             {_fmt_c(stats.t5_c)}",
+        f"  Early onset          {_fmt_c(stats.t_early_c)}",
+        f"  T1 (1% of step)      {_fmt_c(stats.t1_c)}",
+        f"  T5 (5% of step)      {_fmt_c(stats.t5_c)}",
         f"  Tangent onset        {_fmt_c(stats.t_onset_c)}",
         f"  T50                  {_fmt_c(stats.t50_c)}",
         f"  DTG peak             {_fmt_c(stats.t_peak_c)}",
